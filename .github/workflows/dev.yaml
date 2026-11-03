@@ -1,17 +1,26 @@
+
 name: Deploy E-commerce Infrastructure (Dev)
 
 on:
   workflow_dispatch:
+
   push:
-    branches: [ "main" ]
+    branches:
+      - main
     paths:
-      - "**.tf"
-      - "terraform.tfvars"
+      - "*.tf"
+      - "**/*.tf"
+      - "*.tfvars"
+      - "**/*.tfvars"
       - ".github/workflows/dev.yaml"
 
 permissions:
   id-token: write
   contents: read
+
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
 
 jobs:
   terraform:
@@ -20,10 +29,11 @@ jobs:
     environment: dev
 
     env:
-      ARM_USE_OIDC: true
+      ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_sql_admin_password: ${{ secrets.TF_VAR_SQL_ADMIN_PASSWORD }}
 
@@ -31,12 +41,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+      - name: Validate Azure Credentials
+        shell: bash
+        run: |
+          test -n "$ARM_CLIENT_ID" || {
+            echo "ERROR: AZURE_CLIENT_ID is missing"
+            exit 1
+          }
+
+          test -n "$ARM_TENANT_ID" || {
+            echo "ERROR: AZURE_TENANT_ID is missing"
+            exit 1
+          }
+
+          test -n "$ARM_SUBSCRIPTION_ID" || {
+            echo "ERROR: AZURE_SUBSCRIPTION_ID is missing"
+            exit 1
+          }
+
+          test -n "$TF_VAR_sql_admin_password" || {
+            echo "ERROR: SQL admin password is missing"
+            exit 1
+          }
+
+          echo "Azure credentials are configured."
+
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify Azure Login
+        run: az account show --query "{name:name, subscription:id, tenant:tenantId}" -o table
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -53,7 +91,8 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=ecommerce-dev.tfstate" \
-            -backend-config="use_oidc=true"
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
 
       - name: Terraform Validate
         run: terraform validate
@@ -62,5 +101,5 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
